@@ -20,6 +20,7 @@ from pfp.common.se3_utils import rot6d_to_quat_np, pfp_to_pose_np
 try:
     import rerun as rr
 except ImportError:
+    rr = None
     print("WARNING: Rerun not installed. Visualization will not work.")
 
 
@@ -39,6 +40,7 @@ class RLBenchEnv(BaseEnv):
         headless: bool,
         vis: bool,
         obs_mode: str = "pcd",
+        dataset_root: str = "",
     ):
         assert obs_mode in ["pcd", "rgb"], "Invalid obs_mode"
         self.obs_mode = obs_mode
@@ -69,6 +71,7 @@ class RLBenchEnv(BaseEnv):
         )
         self.env = Environment(
             action_mode,
+            dataset_root=dataset_root,
             obs_config=obs_config,
             headless=headless,
         )
@@ -179,7 +182,7 @@ class RLBenchEnv(BaseEnv):
         prediction: the full trajectory of robot states (T, 10)
         """
         VIS_FLOW = False
-        if not self.vis:
+        if not self.vis or rr is None:
             return
         rr.set_time_seconds("time", time.time())
 

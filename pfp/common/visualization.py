@@ -2,17 +2,24 @@ from __future__ import annotations
 import trimesh
 import numpy as np
 import open3d as o3d
-from yourdfpy.urdf import URDF
 from pfp.common.se3_utils import pfp_to_pose_np
+
+try:
+    from yourdfpy.urdf import URDF
+except ImportError:
+    URDF = None
 
 try:
     import rerun as rr
 except ImportError:
+    rr = None
     print("WARNING: Rerun not installed. Visualization will not work.")
 
 
 class RerunViewer:
     def __init__(self, name: str, addr: str = None):
+        if rr is None:
+            return
         rr.init(name)
         if addr is None:
             addr = "127.0.0.1"
@@ -23,6 +30,8 @@ class RerunViewer:
 
     @staticmethod
     def add_obs_dict(obs_dict: dict, timestep: int = None):
+        if rr is None:
+            return
         if timestep is not None:
             rr.set_time_sequence("timestep", timestep)
         RerunViewer.add_rgb("rgb", obs_dict["image"])
@@ -46,6 +55,8 @@ class RerunViewer:
     def add_np_pointcloud(
         name: str, points: np.ndarray, colors_uint8: np.ndarray = None, radii: float = None
     ):
+        if rr is None:
+            return
         rr_points = rr.Points3D(positions=points, colors=colors_uint8, radii=radii)
         rr.log(name, rr_points)
         return
@@ -58,11 +69,15 @@ class RerunViewer:
 
     @staticmethod
     def add_aabb(name: str, centers: np.ndarray, extents: np.ndarray, timeless=False):
+        if rr is None:
+            return
         rr.log(name, rr.Boxes3D(centers=centers, sizes=extents), timeless=timeless)
         return
 
     @staticmethod
     def add_mesh_trimesh(name: str, mesh: trimesh.Trimesh, timeless: bool = False):
+        if rr is None:
+            return
         # Handle colors
         if mesh.visual.kind in ["vertex", "face"]:
             vertex_colors = mesh.visual.vertex_colors
@@ -71,12 +86,15 @@ class RerunViewer:
         else:
             vertex_colors = None
         # Log mesh
-        rr_mesh = rr.Mesh3D(
+        mesh_kwargs = dict(
             vertex_positions=mesh.vertices,
             vertex_colors=vertex_colors,
             vertex_normals=mesh.vertex_normals,
-            indices=mesh.faces,
         )
+        try:
+            rr_mesh = rr.Mesh3D(indices=mesh.faces, **mesh_kwargs)
+        except TypeError:
+            rr_mesh = rr.Mesh3D(triangle_indices=mesh.faces, **mesh_kwargs)
         rr.log(name, rr_mesh, timeless=timeless)
         return
 
@@ -88,6 +106,8 @@ class RerunViewer:
 
     @staticmethod
     def add_rgb(name: str, rgb_uint8: np.ndarray):
+        if rr is None:
+            return
         if rgb_uint8.shape[0] == 3:
             # CHW -> HWC
             rgb_uint8 = np.transpose(rgb_uint8, (1, 2, 0))
@@ -95,6 +115,8 @@ class RerunViewer:
 
     @staticmethod
     def add_depth(name: str, detph: np.ndarray):
+        if rr is None:
+            return
         rr.log(name, rr.DepthImage(detph))
 
     @staticmethod
@@ -110,6 +132,8 @@ class RerunViewer:
 
     @staticmethod
     def clear():
+        if rr is None:
+            return
         rr.log("vis", rr.Clear(recursive=True))
         return
 
@@ -124,6 +148,8 @@ class RerunTraj:
         name: str
         traj: np.ndarray (T, 10)
         """
+        if rr is None:
+            return
         if self.traj_shape is None or self.traj_shape != traj.shape:
             self.traj_shape = traj.shape
             for i in range(traj.shape[0]):
@@ -139,6 +165,10 @@ class RerunTraj:
 
 class RerunURDF:
     def __init__(self, name: str, urdf_path: str, meshes_root: str):
+        if URDF is None:
+            raise ImportError(
+                "RerunURDF requires 'yourdfpy'. Install it to enable URDF visualization."
+            )
         self.name = name
         self.urdf: URDF = URDF.load(urdf_path, mesh_dir=meshes_root)
         return
