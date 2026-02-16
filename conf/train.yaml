@@ -49,5 +49,6 @@ lr_scheduler:
 
 
 defaults:
+  - _self_
   - model: flow
   - backbone: pointnet
