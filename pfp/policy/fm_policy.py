@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import pypose as pp
 from omegaconf import OmegaConf
-from composer.models import ComposerModel
+from pfp.common.composer_compat import ComposerModel
 from pfp.policy.base_policy import BasePolicy
 from pfp import DEVICE, REPO_DIRS
 from pfp.common.se3_utils import init_random_traj_th
@@ -258,7 +258,7 @@ class FMPolicy(ComposerModel, BasePolicy):
         assert len(ckpt_path_list) < 2, f"Multiple ckpts found in {ckpt_dir} with {ckpt_episode}"
         ckpt_fpath = ckpt_path_list[0]
 
-        state_dict = torch.load(ckpt_fpath, map_location=DEVICE)
+        state_dict = torch.load(ckpt_fpath, map_location=DEVICE, weights_only=False)
         cfg = OmegaConf.load(ckpt_dir / "config.yaml")
         # cfg.model.obs_encoder.encoder.random_crop = False
         cfg.model.subs_factor = subs_factor
