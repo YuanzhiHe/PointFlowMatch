@@ -10,12 +10,12 @@ from rlbench.backend.observation import Observation
 from rlbench.backend.exceptions import InvalidActionError
 from rlbench.action_modes.action_mode import MoveArmThenGripper
 from rlbench.action_modes.gripper_action_modes import Discrete
-from rlbench.action_modes.arm_action_modes import EndEffectorPoseViaPlanning
+from rlbench.action_modes.arm_action_modes import EndEffectorPoseViaPlanning, EndEffectorPoseViaIK, RelativeFrame
 from rlbench.observation_config import ObservationConfig, CameraConfig
 from rlbench.utils import name_to_task_class
 from pfp.common.visualization import RerunViewer as RV
 from pfp.common.o3d_utils import make_pcd, merge_pcds
-from pfp.common.se3_utils import rot6d_to_quat_np, pfp_to_pose_np
+from pfp.common.se3_utils import rot6d_to_quat_np, rot6d_to_rot_np, pfp_to_pose_np
 
 try:
     import rerun as rr
@@ -41,9 +41,12 @@ class RLBenchEnv(BaseEnv):
         vis: bool,
         obs_mode: str = "pcd",
         dataset_root: str = "",
+        arm_action_mode: str = "planning_absolute",
+        static_positions: bool = False,
     ):
         assert obs_mode in ["pcd", "rgb"], "Invalid obs_mode"
         self.obs_mode = obs_mode
+        self.arm_action_mode = str(arm_action_mode).lower()
         # image_size=(128, 128)
         self.voxel_size = voxel_size
         self.n_points = n_points
@@ -66,14 +69,24 @@ class RLBenchEnv(BaseEnv):
             gripper_joint_positions=True,
         )
         # EE pose is (X,Y,Z,Qx,Qy,Qz,Qw)
+        if self.arm_action_mode == "planning_absolute":
+            arm_mode = EndEffectorPoseViaPlanning()
+        elif self.arm_action_mode == "ik_delta":
+            arm_mode = EndEffectorPoseViaIK(absolute_mode=False, frame=RelativeFrame.WORLD)
+        else:
+            raise ValueError(
+                f"Unsupported arm_action_mode='{arm_action_mode}'. "
+                "Use planning_absolute|ik_delta."
+            )
         action_mode = MoveArmThenGripper(
-            arm_action_mode=EndEffectorPoseViaPlanning(), gripper_action_mode=Discrete()
+            arm_action_mode=arm_mode, gripper_action_mode=Discrete()
         )
         self.env = Environment(
             action_mode,
             dataset_root=dataset_root,
             obs_config=obs_config,
             headless=headless,
+            static_positions=static_positions,
         )
         self.env.launch()
         self.task = self.env.get_task(name_to_task_class(task_name))
@@ -83,7 +96,10 @@ class RLBenchEnv(BaseEnv):
             max_bound=(1, 0.65, 2),
         )
         self.vis = vis
+        RV.set_enabled(self.vis)
         self.last_obs = None
+        self.last_action_invalid = False
+        self.suppress_invalid_action_prints = True
         if self.vis:
             RV.add_axis("vis/origin", np.eye(4), size=0.01, timeless=True)
             RV.add_aabb(
@@ -99,8 +115,20 @@ class RLBenchEnv(BaseEnv):
         return
 
     def step(self, robot_state: np.ndarray):
+        self.last_action_invalid = False
         ee_position = robot_state[:3]
         ee_quat = rot6d_to_quat_np(robot_state[3:9])
+        if self.arm_action_mode == "ik_delta":
+            if self.last_obs is None:
+                _ = self.get_obs()
+            cur_position = np.asarray(self.last_obs.gripper_pose[:3], dtype=np.float32)
+            cur_quat = np.asarray(self.last_obs.gripper_pose[3:], dtype=np.float32)  # xyzw
+            delta_pos = ee_position - cur_position
+            target_rot = rot6d_to_rot_np(robot_state[3:9])
+            current_rot = np.asarray(self.last_obs.gripper_matrix[:3, :3], dtype=np.float32)
+            delta_rot = target_rot @ current_rot.T
+            ee_quat = sm.r2q(delta_rot, order="xyzs")
+            ee_position = delta_pos
         gripper = robot_state[-1:]
         action = np.concatenate([ee_position, ee_quat, gripper])
         reward, terminate = self._step_safe(action)
@@ -112,18 +140,28 @@ class RLBenchEnv(BaseEnv):
             return 0.0, True
         try:
             _, reward, terminate = self.task.step(action)
-        except IKError and InvalidActionError as e:
-            print(e)
-            cur_position = self.last_obs.gripper_pose[:3]
-            des_position = action[:3]
-            new_position = cur_position + (des_position - cur_position) * 0.25
+        except (IKError, InvalidActionError) as e:
+            if not getattr(self, "suppress_invalid_action_prints", False):
+                print(e)
+            self.last_action_invalid = True
+            if self.arm_action_mode == "ik_delta":
+                new_position = action[:3] * 0.15
+                ident_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                des_quat = action[3:7]
+                des_quat = np.array([des_quat[3], des_quat[0], des_quat[1], des_quat[2]])
+                new_quat = sm.qslerp(ident_quat, des_quat, 0.15, shortest=True)
+                new_quat = np.array([new_quat[1], new_quat[2], new_quat[3], new_quat[0]])
+            else:
+                cur_position = self.last_obs.gripper_pose[:3]
+                des_position = action[:3]
+                new_position = cur_position + (des_position - cur_position) * 0.25
 
-            cur_quat = self.last_obs.gripper_pose[3:]
-            cur_quat = np.array([cur_quat[3], cur_quat[0], cur_quat[1], cur_quat[2]])
-            des_quat = action[3:7]
-            des_quat = np.array([des_quat[3], des_quat[0], des_quat[1], des_quat[2]])
-            new_quat = sm.qslerp(cur_quat, des_quat, 0.25, shortest=True)
-            new_quat = np.array([new_quat[1], new_quat[2], new_quat[3], new_quat[0]])
+                cur_quat = self.last_obs.gripper_pose[3:]
+                cur_quat = np.array([cur_quat[3], cur_quat[0], cur_quat[1], cur_quat[2]])
+                des_quat = action[3:7]
+                des_quat = np.array([des_quat[3], des_quat[0], des_quat[1], des_quat[2]])
+                new_quat = sm.qslerp(cur_quat, des_quat, 0.25, shortest=True)
+                new_quat = np.array([new_quat[1], new_quat[2], new_quat[3], new_quat[0]])
 
             new_action = np.concatenate([new_position, new_quat, action[-1:]])
             reward, terminate = self._step_safe(new_action, recursion_depth + 1)

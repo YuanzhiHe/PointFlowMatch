@@ -17,8 +17,27 @@ except ImportError:
 
 
 class RerunViewer:
+    ENABLED = False
+
+    @staticmethod
+    def set_enabled(enabled: bool) -> None:
+        RerunViewer.ENABLED = bool(enabled)
+
+    @staticmethod
+    def _is_enabled() -> bool:
+        return bool(RerunViewer.ENABLED) and rr is not None
+
+    @staticmethod
+    def _log(name: str, entity, timeless: bool = False):
+        if not RerunViewer._is_enabled():
+            return
+        try:
+            rr.log(name, entity, timeless=timeless)
+        except TypeError:
+            rr.log(name, entity)
+
     def __init__(self, name: str, addr: str = None):
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
         rr.init(name)
         if addr is None:
@@ -55,10 +74,10 @@ class RerunViewer:
     def add_np_pointcloud(
         name: str, points: np.ndarray, colors_uint8: np.ndarray = None, radii: float = None
     ):
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
         rr_points = rr.Points3D(positions=points, colors=colors_uint8, radii=radii)
-        rr.log(name, rr_points)
+        RerunViewer._log(name, rr_points)
         return
 
     @staticmethod
@@ -69,14 +88,14 @@ class RerunViewer:
 
     @staticmethod
     def add_aabb(name: str, centers: np.ndarray, extents: np.ndarray, timeless=False):
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
-        rr.log(name, rr.Boxes3D(centers=centers, sizes=extents), timeless=timeless)
+        RerunViewer._log(name, rr.Boxes3D(centers=centers, sizes=extents), timeless=timeless)
         return
 
     @staticmethod
     def add_mesh_trimesh(name: str, mesh: trimesh.Trimesh, timeless: bool = False):
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
         # Handle colors
         if mesh.visual.kind in ["vertex", "face"]:
@@ -95,7 +114,7 @@ class RerunViewer:
             rr_mesh = rr.Mesh3D(indices=mesh.faces, **mesh_kwargs)
         except TypeError:
             rr_mesh = rr.Mesh3D(triangle_indices=mesh.faces, **mesh_kwargs)
-        rr.log(name, rr_mesh, timeless=timeless)
+        RerunViewer._log(name, rr_mesh, timeless=timeless)
         return
 
     @staticmethod
@@ -106,18 +125,18 @@ class RerunViewer:
 
     @staticmethod
     def add_rgb(name: str, rgb_uint8: np.ndarray):
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
         if rgb_uint8.shape[0] == 3:
             # CHW -> HWC
             rgb_uint8 = np.transpose(rgb_uint8, (1, 2, 0))
-        rr.log(name, rr.Image(rgb_uint8))
+        RerunViewer._log(name, rr.Image(rgb_uint8))
 
     @staticmethod
     def add_depth(name: str, detph: np.ndarray):
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
-        rr.log(name, rr.DepthImage(detph))
+        RerunViewer._log(name, rr.DepthImage(detph))
 
     @staticmethod
     def add_traj(name: str, traj: np.ndarray):
@@ -132,9 +151,9 @@ class RerunViewer:
 
     @staticmethod
     def clear():
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
-        rr.log("vis", rr.Clear(recursive=True))
+        RerunViewer._log("vis", rr.Clear(recursive=True))
         return
 
 
@@ -148,7 +167,7 @@ class RerunTraj:
         name: str
         traj: np.ndarray (T, 10)
         """
-        if rr is None:
+        if not RerunViewer._is_enabled():
             return
         if self.traj_shape is None or self.traj_shape != traj.shape:
             self.traj_shape = traj.shape
@@ -156,7 +175,7 @@ class RerunTraj:
                 RerunViewer.add_axis(name + f"/{i}t", np.eye(4), size)
         poses = pfp_to_pose_np(traj)
         for i, pose in enumerate(poses):
-            rr.log(
+            RerunViewer._log(
                 name + f"/{i}t",
                 rr.Transform3D(mat3x3=pose[:3, :3], translation=pose[:3, 3]),
             )
